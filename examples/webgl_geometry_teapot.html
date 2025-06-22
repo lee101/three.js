@@ -44,7 +44,8 @@
 			let bNonBlinn;
 			let shading;
 
-			let teapot, textureCube;
+                        let teapot, textureCube;
+                        const pbrMaps = {};
 			const materials = {};
 
 			init();
@@ -91,7 +92,32 @@
 				const path = 'textures/cube/pisa/';
 				const urls = [ 'px.png', 'nx.png', 'py.png', 'ny.png', 'pz.png', 'nz.png' ];
 
-				textureCube = new THREE.CubeTextureLoader().setPath( path ).load( urls );
+                                textureCube = new THREE.CubeTextureLoader().setPath( path ).load( urls );
+
+                                const loader = new THREE.TextureLoader();
+                                pbrMaps.map = loader.load( 'textures/ambientcg/Ice002_1K-JPG_Color.jpg' );
+                                pbrMaps.map.colorSpace = THREE.SRGBColorSpace;
+                                pbrMaps.normalMap = loader.load( 'textures/ambientcg/Ice002_1K-JPG_NormalGL.jpg' );
+                                pbrMaps.roughnessMap = loader.load( 'textures/ambientcg/Ice002_1K-JPG_Roughness.jpg' );
+                                pbrMaps.displacementMap = loader.load( 'textures/ambientcg/Ice002_1K-JPG_Displacement.jpg' );
+                                pbrMaps.metalnessMap = loader.load( 'textures/planets/earth_specular_2048.jpg' );
+                                pbrMaps.aoMap = loader.load( 'textures/brick_diffuse.jpg' );
+                                for ( const key in pbrMaps ) {
+                                        const t = pbrMaps[ key ];
+                                        t.wrapS = t.wrapT = THREE.RepeatWrapping;
+                                }
+
+                                materials[ 'pbr' ] = new THREE.MeshStandardMaterial( {
+                                        map: pbrMaps.map,
+                                        normalMap: pbrMaps.normalMap,
+                                        roughnessMap: pbrMaps.roughnessMap,
+                                        metalnessMap: pbrMaps.metalnessMap,
+                                        displacementMap: pbrMaps.displacementMap,
+                                        displacementScale: 5,
+                                        aoMap: pbrMaps.aoMap,
+                                        envMap: textureCube,
+                                        side: THREE.DoubleSide
+                                } );
 
 				materials[ 'wireframe' ] = new THREE.MeshBasicMaterial( { wireframe: true } );
 				materials[ 'flat' ] = new THREE.MeshPhongMaterial( { specular: 0x000000, flatShading: true, side: THREE.DoubleSide } );
@@ -130,15 +156,18 @@
 
 			function setupGui() {
 
-				effectController = {
-					newTess: 15,
-					bottom: true,
-					lid: true,
-					body: true,
-					fitLid: false,
-					nonblinn: false,
-					newShading: 'glossy'
-				};
+                                effectController = {
+                                        newTess: 15,
+                                        bottom: true,
+                                        lid: true,
+                                        body: true,
+                                        fitLid: false,
+                                        nonblinn: false,
+                                        newShading: 'glossy',
+                                        metalness: 0.9,
+                                        roughness: 0.2,
+                                        displacementScale: 5
+                                };
 
 				const gui = new GUI();
 				gui.add( effectController, 'newTess', [ 2, 3, 4, 5, 6, 8, 10, 15, 20, 30, 40, 50 ] ).name( 'Tessellation Level' ).onChange( render );
@@ -147,7 +176,10 @@
 				gui.add( effectController, 'bottom' ).name( 'display bottom' ).onChange( render );
 				gui.add( effectController, 'fitLid' ).name( 'snug lid' ).onChange( render );
 				gui.add( effectController, 'nonblinn' ).name( 'original scale' ).onChange( render );
-				gui.add( effectController, 'newShading', [ 'wireframe', 'flat', 'smooth', 'glossy', 'textured', 'reflective' ] ).name( 'Shading' ).onChange( render );
+                                gui.add( effectController, 'newShading', [ 'wireframe', 'flat', 'smooth', 'glossy', 'textured', 'reflective', 'pbr' ] ).name( 'Shading' ).onChange( render );
+                                gui.add( effectController, 'metalness', 0, 1 ).name( 'Metalness' ).onChange( render );
+                                gui.add( effectController, 'roughness', 0, 1 ).name( 'Roughness' ).onChange( render );
+                                gui.add( effectController, 'displacementScale', 0, 10 ).name( 'Displacement' ).onChange( render );
 
 			}
 
@@ -177,7 +209,7 @@
 				}
 
 				// skybox is rendered separately, so that it is always behind the teapot.
-				if ( shading === 'reflective' ) {
+                                if ( shading === 'reflective' || shading === 'pbr' ) {
 
 					scene.background = textureCube;
 
@@ -209,7 +241,13 @@
 					effectController.fitLid,
 					! effectController.nonblinn );
 
-				teapot = new THREE.Mesh( geometry, materials[ shading ] );
+                                const material = materials[ shading ];
+                                if ( shading === 'pbr' ) {
+                                        material.metalness = effectController.metalness;
+                                        material.roughness = effectController.roughness;
+                                        material.displacementScale = effectController.displacementScale;
+                                }
+                                teapot = new THREE.Mesh( geometry, material );
 
 				scene.add( teapot );
 
