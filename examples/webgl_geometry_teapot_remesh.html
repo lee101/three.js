@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - teapot buffer geometry</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link type="text/css" rel="stylesheet" href="main.css">
+	</head>
+	<body>
+		<div id="info">
+			<a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> - the Utah Teapot<br />
+			from <a href="https://www.udacity.com/course/interactive-3d-graphics--cs291" target="_blank" rel="noopener">Udacity Interactive 3D Graphics</a>
+		</div>
+
+		<script type="importmap">
+			{
+				"imports": {
+                                       "three": "../build/three.module.js",
+                                       "three/addons/": "./jsm/",
+                                       "three-subdivide": "https://cdn.jsdelivr.net/npm/three-subdivide@1.1.2/build/index.module.js",
+                                       "d3-delaunay": "https://cdn.jsdelivr.net/npm/d3-delaunay@6.0.2/+esm",
+                                       "surface-net": "./jsm/libs/surfaceNet.js"
+                               }
+                       }
+               </script>
+
+		<script type="module">
+
+import * as THREE from 'three';
+
+import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TeapotGeometry } from 'three/addons/geometries/TeapotGeometry.js';
+import { SimplifyModifier } from 'three/addons/modifiers/SimplifyModifier.js';
+import { LoopSubdivision } from 'three-subdivide';
+import { Delaunay } from 'd3-delaunay';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { surfaceNet } from 'surface-net';
+
+			let camera, scene, renderer;
+			let cameraControls;
+			let effectController;
+			const teapotSize = 300;
+			let ambientLight, light;
+
+			let tess = - 1;	// force initialization
+			let bBottom;
+			let bLid;
+			let bBody;
+                       let bFitLid;
+                       let bNonBlinn;
+                       let shading;
+                       let currentAlgorithm = 'None';
+
+                        let teapot, textureCube, voronoiLines;
+                        let boxHelper, sdfPoints;
+                       const materials = {};
+
+                        const downloadLink = document.createElement( 'a' );
+                        downloadLink.style.display = 'none';
+                        document.body.appendChild( downloadLink );
+
+			init();
+                       render();
+
+                        function exportGLB() {
+                               const exporter = new GLTFExporter();
+                               exporter.parse( teapot, function ( glb ) {
+                                       const blob = new Blob( [ glb ], { type: 'application/octet-stream' } );
+                                       downloadLink.href = URL.createObjectURL( blob );
+                                       downloadLink.download = 'teapot.glb';
+                                       downloadLink.click();
+                               }, { binary: true } );
+                        }
+
+			function init() {
+
+				const container = document.createElement( 'div' );
+				document.body.appendChild( container );
+
+				const canvasWidth = window.innerWidth;
+				const canvasHeight = window.innerHeight;
+
+				// CAMERA
+				camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 80000 );
+				camera.position.set( - 600, 550, 1300 );
+
+				// LIGHTS
+				ambientLight = new THREE.AmbientLight( 0x7c7c7c, 2.0 );
+
+				light = new THREE.DirectionalLight( 0xFFFFFF, 2.0 );
+				light.position.set( 0.32, 0.39, 0.7 );
+
+				// RENDERER
+				renderer = new THREE.WebGLRenderer( { antialias: true } );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( canvasWidth, canvasHeight );
+				container.appendChild( renderer.domElement );
+
+				// EVENTS
+				window.addEventListener( 'resize', onWindowResize );
+
+				// CONTROLS
+				cameraControls = new OrbitControls( camera, renderer.domElement );
+				cameraControls.addEventListener( 'change', render );
+
+				// TEXTURE MAP
+				const textureMap = new THREE.TextureLoader().load( 'textures/uv_grid_opengl.jpg' );
+				textureMap.wrapS = textureMap.wrapT = THREE.RepeatWrapping;
+				textureMap.anisotropy = 16;
+				textureMap.colorSpace = THREE.SRGBColorSpace;
+
+				// REFLECTION MAP
+				const path = 'textures/cube/pisa/';
+				const urls = [ 'px.png', 'nx.png', 'py.png', 'ny.png', 'pz.png', 'nz.png' ];
+
+				textureCube = new THREE.CubeTextureLoader().setPath( path ).load( urls );
+
+				materials[ 'wireframe' ] = new THREE.MeshBasicMaterial( { wireframe: true } );
+				materials[ 'flat' ] = new THREE.MeshPhongMaterial( { specular: 0x000000, flatShading: true, side: THREE.DoubleSide } );
+				materials[ 'smooth' ] = new THREE.MeshLambertMaterial( { side: THREE.DoubleSide } );
+				materials[ 'glossy' ] = new THREE.MeshPhongMaterial( { color: 0xc0c0c0, specular: 0x404040, shininess: 300, side: THREE.DoubleSide } );
+				materials[ 'textured' ] = new THREE.MeshPhongMaterial( { map: textureMap, side: THREE.DoubleSide } );
+				materials[ 'reflective' ] = new THREE.MeshPhongMaterial( { envMap: textureCube, side: THREE.DoubleSide } );
+
+				// scene itself
+				scene = new THREE.Scene();
+				scene.background = new THREE.Color( 0xAAAAAA );
+
+				scene.add( ambientLight );
+				scene.add( light );
+
+				// GUI
+				setupGui();
+
+			}
+
+			// EVENT HANDLERS
+
+			function onWindowResize() {
+
+				const canvasWidth = window.innerWidth;
+				const canvasHeight = window.innerHeight;
+
+				renderer.setSize( canvasWidth, canvasHeight );
+
+				camera.aspect = canvasWidth / canvasHeight;
+				camera.updateProjectionMatrix();
+
+				render();
+
+			}
+
+			function setupGui() {
+
+				effectController = {
+					newTess: 15,
+					bottom: true,
+					lid: true,
+					body: true,
+					fitLid: false,
+					nonblinn: false,
+                                       newShading: 'glossy',
+                                       algorithm: 'None',
+                                       simplifyRatio: 0.5,
+                                       subdivideIterations: 1,
+                                       sdfResolution: 32,
+                                       showBox: false,
+                                       showSDF: false
+                               };
+
+				const gui = new GUI();
+				gui.add( effectController, 'newTess', [ 2, 3, 4, 5, 6, 8, 10, 15, 20, 30, 40, 50 ] ).name( 'Tessellation Level' ).onChange( render );
+				gui.add( effectController, 'lid' ).name( 'display lid' ).onChange( render );
+				gui.add( effectController, 'body' ).name( 'display body' ).onChange( render );
+				gui.add( effectController, 'bottom' ).name( 'display bottom' ).onChange( render );
+				gui.add( effectController, 'fitLid' ).name( 'snug lid' ).onChange( render );
+                               gui.add( effectController, 'nonblinn' ).name( 'original scale' ).onChange( render );
+                               gui.add( effectController, 'newShading', [ 'wireframe', 'flat', 'smooth', 'glossy', 'textured', 'reflective' ] ).name( 'Shading' ).onChange( render );
+                               gui.add( effectController, 'algorithm', [ 'None', 'Simplify', 'Subdivision', 'Delaunay', 'Voronoi', 'SurfaceNet' ] ).name( 'Algorithm' ).onChange( render );
+                               gui.add( effectController, 'simplifyRatio', 0, 0.9, 0.1 ).name( 'Simplify Ratio' ).onChange( render );
+                               gui.add( effectController, 'subdivideIterations', 1, 3, 1 ).name( 'Subdivide Iterations' ).onChange( render );
+                               gui.add( effectController, 'showBox' ).name( 'Show Bounding Box' ).onChange( render );
+                               gui.add( effectController, 'sdfResolution', 10, 64, 1 ).name( 'SDF Resolution' ).onChange( render );
+                               gui.add( effectController, 'showSDF' ).name( 'Show SDF Points' ).onChange( render );
+                               gui.add( { exportGLB }, 'exportGLB' ).name( 'Export GLB' );
+
+			}
+
+
+			//
+
+			function render() {
+
+				if ( effectController.newTess !== tess ||
+					effectController.bottom !== bBottom ||
+					effectController.lid !== bLid ||
+					effectController.body !== bBody ||
+					effectController.fitLid !== bFitLid ||
+                                       effectController.nonblinn !== bNonBlinn ||
+                                       effectController.newShading !== shading ||
+                                       effectController.algorithm !== currentAlgorithm ) {
+
+					tess = effectController.newTess;
+					bBottom = effectController.bottom;
+					bLid = effectController.lid;
+					bBody = effectController.body;
+					bFitLid = effectController.fitLid;
+					bNonBlinn = effectController.nonblinn;
+                                       shading = effectController.newShading;
+                                       currentAlgorithm = effectController.algorithm;
+
+					createNewTeapot();
+
+				}
+
+				// skybox is rendered separately, so that it is always behind the teapot.
+				if ( shading === 'reflective' ) {
+
+					scene.background = textureCube;
+
+				} else {
+
+					scene.background = null;
+
+				}
+
+				renderer.render( scene, camera );
+
+			}
+
+			// Whenever the teapot changes, the scene is rebuilt from scratch (not much to it).
+                               function createNewTeapot() {
+
+                               if ( teapot !== undefined ) {
+
+                                       teapot.geometry.dispose();
+                                       scene.remove( teapot );
+
+                               }
+                               if ( voronoiLines !== undefined ) {
+                                       voronoiLines.geometry.dispose();
+                                       scene.remove( voronoiLines );
+                                       voronoiLines = undefined;
+                               }
+                               if ( sdfPoints !== undefined ) {
+                                       sdfPoints.geometry.dispose();
+                                       scene.remove( sdfPoints );
+                                       sdfPoints = undefined;
+                               }
+
+                               let geometry = new TeapotGeometry( teapotSize,
+                                       tess,
+                                       effectController.bottom,
+                                       effectController.lid,
+                                       effectController.body,
+                                       effectController.fitLid,
+                                       ! effectController.nonblinn );
+
+                               if ( effectController.algorithm === 'Simplify' ) {
+                                       const modifier = new SimplifyModifier();
+                                       const remove = Math.floor( geometry.getAttribute( 'position' ).count * effectController.simplifyRatio );
+                                       geometry = modifier.modify( geometry, remove );
+                               } else if ( effectController.algorithm === 'Subdivision' ) {
+                                       geometry = LoopSubdivision.modify( geometry, effectController.subdivideIterations );
+                               } else if ( effectController.algorithm === 'Delaunay' || effectController.algorithm === 'Voronoi' ) {
+                                       geometry = geometry.toNonIndexed();
+                                       const pos = geometry.getAttribute( 'position' );
+                                       const pts = [];
+                                       for ( let i = 0; i < pos.count; i ++ ) pts.push( [ pos.getX( i ), pos.getY( i ) ] );
+                                       const delaunay = Delaunay.from( pts );
+                                       const indices = Array.from( delaunay.triangles );
+                                       geometry.setIndex( indices );
+                                       if ( effectController.algorithm === 'Voronoi' ) {
+                                               const voronoi = delaunay.voronoi( [ - teapotSize, - teapotSize, teapotSize, teapotSize ] );
+                                               const lines = [];
+                                               for ( let i = 0; i < pts.length; i ++ ) {
+                                                       const poly = voronoi.cellPolygon( i );
+                                                       if ( poly ) {
+                                                               for ( let j = 0; j < poly.length - 1; j ++ ) {
+                                                                       lines.push( poly[ j ][ 0 ], poly[ j ][ 1 ], 0 );
+                                                                       lines.push( poly[ j + 1 ][ 0 ], poly[ j + 1 ][ 1 ], 0 );
+                                                               }
+                                                       }
+                                               }
+                                               const lineGeo = new THREE.BufferGeometry();
+                                               lineGeo.setAttribute( 'position', new THREE.Float32BufferAttribute( lines, 3 ) );
+                                               voronoiLines = new THREE.LineSegments( lineGeo, new THREE.LineBasicMaterial( { color: 0x0000ff } ) );
+                                               scene.add( voronoiLines );
+                                       }
+                               } else if ( effectController.algorithm === 'SurfaceNet' ) {
+                                       geometry = geometry.toNonIndexed();
+                                       geometry.computeBoundingBox();
+                                       const bbox = geometry.boundingBox;
+                                       const bounds = [ bbox.min.toArray(), bbox.max.toArray() ];
+                                       console.time( 'surfaceNet' );
+                                       const triangles = [];
+                                       const pos = geometry.getAttribute( 'position' );
+                                       const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+                                       for ( let i = 0; i < pos.count; i += 3 ) {
+                                               a.fromBufferAttribute( pos, i );
+                                               b.fromBufferAttribute( pos, i + 1 );
+                                               c.fromBufferAttribute( pos, i + 2 );
+                                               triangles.push( new THREE.Triangle( a.clone(), b.clone(), c.clone() ) );
+                                       }
+
+                                       const p = new THREE.Vector3();
+                                       const temp = new THREE.Vector3();
+                                       const dir = new THREE.Vector3( 1, 0, 0 );
+                                       const ray = new THREE.Ray();
+                                       const potential = ( x, y, z ) => {
+                                               p.set( x, y, z );
+                                               let minDist = Infinity;
+                                               for ( const tri of triangles ) {
+                                                       tri.closestPointToPoint( p, temp );
+                                                       const d = temp.distanceTo( p );
+                                                       if ( d < minDist ) minDist = d;
+                                               }
+                                               ray.set( p, dir );
+                                               let count = 0;
+                                               for ( const tri of triangles ) {
+                                                       if ( ray.intersectTriangle( tri.a, tri.b, tri.c, false, temp ) ) count ++;
+                                               }
+                                               if ( count % 2 === 1 ) minDist = - minDist;
+                                               return minDist;
+                                       };
+
+                                       const res = effectController.sdfResolution;
+                                       const { positions, cells } = surfaceNet( [ res, res, res ], potential, bounds );
+                                       const verts = positions.flat();
+                                       const inds = cells.flat();
+                                       geometry = new THREE.BufferGeometry();
+                                       geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( verts, 3 ) );
+                                       geometry.setIndex( inds );
+                                       geometry.computeVertexNormals();
+                                       console.timeEnd( 'surfaceNet' );
+
+                                       if ( sdfPoints !== undefined ) {
+                                               scene.remove( sdfPoints );
+                                       }
+                                       if ( effectController.showSDF ) {
+                                               const ptsGeo = new THREE.BufferGeometry();
+                                               ptsGeo.setAttribute( 'position', new THREE.Float32BufferAttribute( verts, 3 ) );
+                                               const mat = new THREE.PointsMaterial( { color: 0x00ff00, size: 2 } );
+                                               sdfPoints = new THREE.Points( ptsGeo, mat );
+                                               scene.add( sdfPoints );
+                                       }
+                               }
+
+                               teapot = new THREE.Mesh( geometry, materials[ shading ] );
+
+                                scene.add( teapot );
+
+                               if ( boxHelper !== undefined ) {
+                                       scene.remove( boxHelper );
+                               }
+                               if ( effectController.showBox ) {
+                                       boxHelper = new THREE.BoxHelper( teapot, 0xff0000 );
+                                       scene.add( boxHelper );
+                               }
+
+			}
+
+		</script>
+
+	</body>
+</html>
