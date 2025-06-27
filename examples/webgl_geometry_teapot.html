@@ -15,8 +15,9 @@
 		<script type="importmap">
 			{
 				"imports": {
-					"three": "../build/three.module.js",
-					"three/addons/": "./jsm/"
+                                "three": "../build/three.module.js",
+                                "three/addons/": "./jsm/",
+                                "three-gpu-pathtracer": "https://cdn.jsdelivr.net/npm/three-gpu-pathtracer@0.0.22/build/index.module.js"
 				}
 			}
 		</script>
@@ -28,7 +29,9 @@
 			import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 
 			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-			import { TeapotGeometry } from 'three/addons/geometries/TeapotGeometry.js';
+import { TeapotGeometry } from 'three/addons/geometries/TeapotGeometry.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+import { WebGLPathTracer, BlurredEnvMapGenerator, GradientEquirectTexture } from 'three-gpu-pathtracer';
 
 			let camera, scene, renderer;
 			let cameraControls;
@@ -44,11 +47,11 @@
 			let bNonBlinn;
 			let shading;
 
-			let teapot, textureCube;
-			const materials = {};
+                        let teapot, textureCube, envMap;
+                        let pathTracer;
+                        const materials = {};
 
-			init();
-			render();
+                        init();
 
 			function init() {
 
@@ -78,8 +81,7 @@
 				window.addEventListener( 'resize', onWindowResize );
 
 				// CONTROLS
-				cameraControls = new OrbitControls( camera, renderer.domElement );
-				cameraControls.addEventListener( 'change', render );
+                                cameraControls = new OrbitControls( camera, renderer.domElement );
 
 				// TEXTURE MAP
 				const textureMap = new THREE.TextureLoader().load( 'textures/uv_grid_opengl.jpg' );
@@ -91,7 +93,42 @@
 				const path = 'textures/cube/pisa/';
 				const urls = [ 'px.png', 'nx.png', 'py.png', 'ny.png', 'pz.png', 'nz.png' ];
 
-				textureCube = new THREE.CubeTextureLoader().setPath( path ).load( urls );
+                                textureCube = new THREE.CubeTextureLoader().setPath( path ).load( urls );
+
+                                const loader = new THREE.TextureLoader();
+                                const pbrMap = loader.load( 'textures/ambientcg/Ice002_1K-JPG_Color.jpg' );
+                                pbrMap.colorSpace = THREE.SRGBColorSpace;
+                                const normalMap = loader.load( 'textures/ambientcg/Ice002_1K-JPG_NormalGL.jpg' );
+                                const roughnessMap = loader.load( 'textures/ambientcg/Ice002_1K-JPG_Roughness.jpg' );
+                                const displacementMap = loader.load( 'textures/ambientcg/Ice002_1K-JPG_Displacement.jpg' );
+                                const aoMap = loader.load( 'textures/minecraft/dirt.png' );
+                                aoMap.colorSpace = THREE.SRGBColorSpace;
+
+                                const pmremGenerator = new THREE.PMREMGenerator( renderer );
+                                new RGBELoader().setPath( 'textures/equirectangular/' ).load( 'royal_esplanade_1k.hdr', function ( tex ) {
+                                        envMap = pmremGenerator.fromEquirectangular( tex ).texture;
+                                        pmremGenerator.dispose();
+                                        tex.dispose();
+
+                                        materials[ 'pbr' ] = new THREE.MeshPhysicalMaterial( {
+                                                map: pbrMap,
+                                                normalMap: normalMap,
+                                                roughnessMap: roughnessMap,
+                                                displacementMap: displacementMap,
+                                                displacementScale: effectController.displacement,
+                                                aoMap: aoMap,
+                                                envMap: envMap,
+                                                envMapIntensity: 1,
+                                                metalness: effectController.metalness,
+                                                roughness: effectController.roughness,
+                                                side: THREE.DoubleSide
+                                        } );
+
+                                        setupGui();
+                                        createNewTeapot();
+                                        renderer.setAnimationLoop( render );
+
+                                } );
 
 				materials[ 'wireframe' ] = new THREE.MeshBasicMaterial( { wireframe: true } );
 				materials[ 'flat' ] = new THREE.MeshPhongMaterial( { specular: 0x000000, flatShading: true, side: THREE.DoubleSide } );
@@ -107,10 +144,7 @@
 				scene.add( ambientLight );
 				scene.add( light );
 
-				// GUI
-				setupGui();
-
-			}
+                        }
 
 			// EVENT HANDLERS
 
@@ -130,15 +164,19 @@
 
 			function setupGui() {
 
-				effectController = {
-					newTess: 15,
-					bottom: true,
-					lid: true,
-					body: true,
-					fitLid: false,
-					nonblinn: false,
-					newShading: 'glossy'
-				};
+                                effectController = {
+                                        newTess: 15,
+                                        bottom: true,
+                                        lid: true,
+                                        body: true,
+                                        fitLid: false,
+                                        nonblinn: false,
+                                        newShading: 'pbr',
+                                        roughness: 1.0,
+                                        metalness: 0.2,
+                                        displacement: 5,
+                                        usePathTracing: false
+                                };
 
 				const gui = new GUI();
 				gui.add( effectController, 'newTess', [ 2, 3, 4, 5, 6, 8, 10, 15, 20, 30, 40, 50 ] ).name( 'Tessellation Level' ).onChange( render );
@@ -146,8 +184,12 @@
 				gui.add( effectController, 'body' ).name( 'display body' ).onChange( render );
 				gui.add( effectController, 'bottom' ).name( 'display bottom' ).onChange( render );
 				gui.add( effectController, 'fitLid' ).name( 'snug lid' ).onChange( render );
-				gui.add( effectController, 'nonblinn' ).name( 'original scale' ).onChange( render );
-				gui.add( effectController, 'newShading', [ 'wireframe', 'flat', 'smooth', 'glossy', 'textured', 'reflective' ] ).name( 'Shading' ).onChange( render );
+                                gui.add( effectController, 'nonblinn' ).name( 'original scale' ).onChange( render );
+                                gui.add( effectController, 'newShading', [ 'wireframe', 'flat', 'smooth', 'glossy', 'textured', 'reflective', 'pbr' ] ).name( 'Shading' ).onChange( render );
+                                gui.add( effectController, 'roughness', 0, 1 ).name( 'roughness' ).onChange( render );
+                                gui.add( effectController, 'metalness', 0, 1 ).name( 'metalness' ).onChange( render );
+                                gui.add( effectController, 'displacement', 0, 10 ).name( 'displacement' ).onChange( render );
+                                gui.add( effectController, 'usePathTracing' ).name( 'raytrace' ).onChange( render );
 
 			}
 
@@ -187,7 +229,23 @@
 
 				}
 
-				renderer.render( scene, camera );
+                                if ( materials[ 'pbr' ] ) {
+                                        materials[ 'pbr' ].roughness = effectController.roughness;
+                                        materials[ 'pbr' ].metalness = effectController.metalness;
+                                        materials[ 'pbr' ].displacementScale = effectController.displacement;
+                                }
+
+                                if ( effectController.usePathTracing ) {
+                                        if ( ! pathTracer ) {
+                                                pathTracer = new WebGLPathTracer( renderer );
+                                                const envGenerator = new BlurredEnvMapGenerator( renderer );
+                                                scene.environment = envGenerator.generate( envMap, 0 );
+                                                pathTracer.setScene( scene, camera );
+                                        }
+                                        pathTracer.renderSample();
+                                } else {
+                                        renderer.render( scene, camera );
+                                }
 
 			}
 
@@ -209,7 +267,8 @@
 					effectController.fitLid,
 					! effectController.nonblinn );
 
-				teapot = new THREE.Mesh( geometry, materials[ shading ] );
+                                const material = materials[ shading ] || materials[ 'glossy' ];
+                                teapot = new THREE.Mesh( geometry, material );
 
 				scene.add( teapot );
 
